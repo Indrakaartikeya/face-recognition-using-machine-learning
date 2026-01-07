@@ -11,3 +11,4 @@ Machine Learning Mini Project -used  for theft detection using cctv camera or an
 ---Preview
 
 https://github.com/Indrakaartikeya/face-recognition-using-machine-learning/blob/main/Preview-1.png
+https://github.com/Indrakaartikeya/face-recognition-using-machine-learning/blob/main/Preview-2.png
