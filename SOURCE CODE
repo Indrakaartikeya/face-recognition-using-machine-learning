@@ -1,0 +1,167 @@
+-- USE GOOGLE COLAB TO EXECUTE THE CODE IN TWO PARTS
+
+--PART1 APP.PY
+
+
+%%writefile app.py
+import streamlit as st
+import numpy as np
+import cv2
+from sklearn.metrics.pairwise import cosine_similarity
+from keras.models import Model
+from keras.applications.vgg16 import VGG16, preprocess_input
+from sklearn.datasets import fetch_olivetti_faces
+
+# --- 1. Load Model and Dataset (Run only once) ---
+@st.cache_resource
+def load_resources():
+    # Load VGG16 model + higher level layers (fc1 for features)
+    base_model = VGG16(weights='imagenet')
+    feature_extractor_model = Model(inputs=base_model.input, outputs=base_model.get_layer('fc1').output)
+
+    # Load the Olivetti Faces dataset
+    olivetti_faces = fetch_olivetti_faces(shuffle=True, random_state=42)
+    images = olivetti_faces.images
+
+    # Pre-calculate features for the dataset
+    dataset_features = []
+
+    # Function to extract features from an image array
+    def extract_features(img_array, model):
+        # Resize image to 224x224 (VGG16 input size)
+        img = cv2.resize(img_array, (224, 224))
+        img_data = np.expand_dims(img, axis=0)
+        img_data = preprocess_input(img_data)
+        features = model.predict(img_data, verbose=0)
+        return features.flatten()
+
+    st.write("Extracting features from the Olivetti dataset (400 images)...")
+    progress_bar = st.progress(0)
+    for i, image in enumerate(images):
+        # Convert grayscale to BGR for VGG16 input
+        image_bgr = cv2.cvtColor((image * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+        features = extract_features(image_bgr, feature_extractor_model)
+        dataset_features.append(features)
+        progress_bar.progress((i + 1) / len(images))
+
+    st.success("Dataset features loaded and extracted!")
+    return feature_extractor_model, images, np.array(dataset_features)
+
+# Load the resources globally
+model, olivetti_images, dataset_features = load_resources()
+# Use built-in OpenCV path
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+
+
+# --- 2. Feature Extraction Logic (for uploaded image) ---
+def extract_uploaded_features(uploaded_file, model, face_cascade):
+    # Convert uploaded file to an OpenCV image array
+    file_bytes = np.asarray(bytearray(uploaded_file.read()), dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, 1) # Read as BGR image
+
+    # 1. Face Detection
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+
+    if len(faces) > 0:
+        # Crop to the largest detected face
+        (x, y, w, h) = sorted(faces, key=lambda f: f[2] * f[3], reverse=True)[0]
+        cropped_img = img[y:y+h, x:x+w]
+        st.write("✅ Face detected and cropped.")
+    else:
+        # If no face is detected, use the whole image
+        cropped_img = img
+        st.warning("⚠️ No face detected. Using the whole image.")
+
+    # 2. Resize and Preprocess for VGG16
+    cropped_img_resized = cv2.resize(cropped_img, (224, 224))
+
+    # 3. Extract Features
+    img_data = np.expand_dims(cropped_img_resized, axis=0)
+    img_data = preprocess_input(img_data)
+
+    features = model.predict(img_data, verbose=0)
+
+    return cropped_img_resized, features.flatten()
+
+
+# --- 3. Streamlit UI Layout ---
+st.title("👤 VGG-FaceMatch: Deep Learning Facial Retrieval")
+st.markdown("Upload a face image to find the most similar identities in the Olivetti Faces dataset.")
+st.markdown("---")
+
+uploaded_file = st.file_uploader("Choose an Image...", type=["jpg", "jpeg", "png"])
+
+if uploaded_file is not None:
+    # --- A. Display uploaded image and extract features ---
+    st.subheader("1. Uploaded Image")
+
+    with st.spinner('Processing image and extracting features...'):
+        uploaded_image_resized, cropped_features = extract_uploaded_features(uploaded_file, model, face_cascade)
+
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.image(uploaded_image_resized, caption='Processed Uploaded Face (224x224)', use_column_width=True, channels="BGR")
+    with col2:
+        st.metric(label="Feature Vector Dimension", value=cropped_features.shape[0])
+        st.metric(label="Similarity Metric", value="Cosine Similarity")
+
+    st.markdown("---")
+
+    # --- B. Calculate and display similar images ---
+    st.subheader("2. Similarity Search Results")
+
+    if st.button("🔍 Find Similar Faces"):
+        with st.spinner('Searching dataset for matches...'):
+            # Calculate cosine similarities
+            similarities = cosine_similarity([cropped_features], dataset_features)
+            # Indices of most similar images (descending order)
+            similar_images_indices = np.argsort(similarities[0])[::-1]
+
+            # Display top 5 similar images
+            top_n = 5
+            cols = st.columns(top_n)
+
+            for i in range(top_n):
+                idx = similar_images_indices[i]
+                similarity_score = similarities[0][idx]
+
+                # Convert the grayscale Olivetti image to BGR for display
+                olivetti_bgr = cv2.cvtColor((olivetti_images[idx] * 255).astype(np.uint8), cv2.COLOR_GRAY2BGR)
+
+                with cols[i]:
+                    st.image(olivetti_bgr, caption=f"Match {i+1}\nScore: {similarity_score:.4f}", use_column_width=True, channels="BGR")
+
+            st.success("Search complete!")
+
+
+
+
+
+-- PART2
+
+
+
+!pip install streamlit mediapipe opencv-python numpy scikit-learn faiss-cpu tensorflow keras
+
+# 1. Install the Cloudflare tunnel library
+!pip install pycloudflared
+
+# 2. Kill any previous Streamlit processes to start fresh
+!pkill streamlit
+
+# 3. Run Streamlit in the background
+!streamlit run app.py &>/content/logs.txt &
+
+# 4. Expose it via Cloudflare
+from pycloudflared import try_cloudflare
+import time
+
+# Give Streamlit a moment to start
+time.sleep(3)
+
+# Start the tunnel
+public_url = try_cloudflare(port=8501)
+print(f"✅ Click here to view your app: {public_url}")
+
+
